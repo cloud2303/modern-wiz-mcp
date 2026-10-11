@@ -103,7 +103,7 @@ async function httpFixture(t: TestContext) {
   const config = readConfig({
     WIZ_TOKEN: "synthetic-token", WIZ_KB_GUID: "kb", WIZ_USER_GUID: "user", WIZ_SERVER_URL: "https://test.wiz.cn",
     WIZ_SESSION_PATH: join(directory, "session.json"), WIZ_JOURNAL_PATH: join(directory, "writes"),
-    MCP_AUTH_TOKEN: "service-secret", MCP_ALLOWED_ORIGINS: "trusted.example",
+    MCP_AUTH_TOKEN: "service-secret",
   });
   const http = createHttpService(service(), config);
   await new Promise<void>(resolve => http.server.listen(0, "127.0.0.1", resolve));
@@ -137,7 +137,7 @@ test("write journal retention is off unless WIZ_KEEP_WRITE_JOURNAL is true", () 
 test("Streamable HTTP Client performs initialize, tool reads and resource reads with Bearer auth", async t => {
   const { url } = await httpFixture(t);
   const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), {
-    requestInit: { headers: { Authorization: "Bearer service-secret", Origin: "https://trusted.example" } },
+    requestInit: { headers: { Authorization: "Bearer service-secret", Origin: "https://proxy.example" } },
   });
   const client = new Client({ name: "http-test", version: "1" });
   t.after(() => client.close());
@@ -150,18 +150,16 @@ test("Streamable HTTP Client performs initialize, tool reads and resource reads 
   assert.equal(resource.contents[0].text, article.markdown);
 });
 
-test("HTTP service rejects missing/wrong Bearer tokens, hostile Hosts and disallowed Origins", async t => {
+test("HTTP service rejects missing or wrong Bearer tokens and accepts any Host or Origin", async t => {
   const { url } = await httpFixture(t);
-  const absent = await rawRequest(`${url}/mcp`, {});
+  const absent = await rawRequest(`${url}/health`, {});
   assert.equal(absent.status, 401);
-  const wrong = await rawRequest(`${url}/mcp`, { Authorization: "Bearer wrong-token" });
+  const wrong = await rawRequest(`${url}/health`, { Authorization: "Bearer wrong-token" });
   assert.equal(wrong.status, 401);
-  const hostileHost = await rawRequest(`${url}/mcp`, { Authorization: "Bearer service-secret", Host: "attacker.example" });
-  assert.equal(hostileHost.status, 403);
-  const hostileOrigin = await rawRequest(`${url}/mcp`, { Authorization: "Bearer service-secret", Origin: "https://attacker.example" });
-  assert.equal(hostileOrigin.status, 403);
-  const malformedOrigin = await rawRequest(`${url}/mcp`, { Authorization: "Bearer service-secret", Origin: "invalid-origin" });
-  assert.equal(malformedOrigin.status, 403);
+  const proxied = await rawRequest(`${url}/health`, { Authorization: "Bearer service-secret", Host: "proxy.example", Origin: "https://proxy.example" });
+  assert.equal(proxied.status, 200);
+  const malformedOrigin = await rawRequest(`${url}/health`, { Authorization: "Bearer service-secret", Origin: "invalid-origin" });
+  assert.equal(malformedOrigin.status, 200);
   const healthy = await rawRequest(`${url}/health`, { Authorization: "Bearer service-secret" });
   assert.equal(healthy.status, 200);
   assert.deepEqual(JSON.parse(healthy.body), { ok: true, service: "modern-wiz-mcp" });

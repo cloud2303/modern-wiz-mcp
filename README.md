@@ -21,7 +21,22 @@ cp .env.example .env
 docker compose up -d
 ```
 
-地址 `http://127.0.0.1:8790/mcp`，请求头 `Authorization: Bearer <MCP_AUTH_TOKEN>`。
+## 使用
+
+服务提供 Streamable HTTP，地址是 `http://127.0.0.1:8790/mcp`。
+
+```json
+{
+  "mcpServers": {
+    "modern-wiz": {
+      "url": "http://127.0.0.1:8790/mcp",
+      "headers": {
+        "Authorization": "Bearer <配置的MCP_AUTH_TOKEN>"
+      }
+    }
+  }
+}
+```
 
 ## 工具
 

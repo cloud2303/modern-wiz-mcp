@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { hostHeaderValidation, originValidation, toNodeHandler } from "@modelcontextprotocol/node";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { WizArticles } from "./articles.js";
 import type { ServiceConfig } from "./config.js";
@@ -14,10 +14,8 @@ function authorized(value: string | undefined, token: string | undefined) {
 export function createHttpService(articles: WizArticles, config: ServiceConfig): { server: Server; close: () => Promise<void> } {
   const handler = createMcpHandler(() => createWizMcp(articles), { responseMode: "json", maxRequestBodySize: 2 * 1024 * 1024 });
   const nodeHandler = toNodeHandler(handler, { maxRequestBodySize: 2 * 1024 * 1024 });
-  const host = hostHeaderValidation(config.allowedHosts), origin = originValidation(config.allowedOrigins);
   const server = createServer((req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    if (!host(req, res) || !origin(req, res)) return;
     if (!authorized(req.headers.authorization, config.bearerToken)) {
       res.writeHead(401, { "WWW-Authenticate": "Bearer" }); res.end("Unauthorized"); return;
     }

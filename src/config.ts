@@ -19,8 +19,6 @@ export interface ServiceConfig {
   host: string;
   port: number;
   bearerToken?: string;
-  allowedHosts: string[];
-  allowedOrigins: string[];
   journalPath: string;
   keepWriteJournal: boolean;
   timeoutMs: number;
@@ -39,7 +37,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
   const host = env.MCP_HOST || "127.0.0.1";
   const loopback = ["localhost", "127.0.0.1", "::1"].includes(host);
   if (!loopback && !env.MCP_AUTH_TOKEN) throw new WizError("INVALID_CONFIG", "对外监听时请配置 MCP_AUTH_TOKEN。");
-  const csv = (value: string | undefined, fallback: string[]) => value ? value.split(",").map(v => v.trim()).filter(Boolean) : fallback;
   const flag = (key: string, fallback: boolean) => {
     const value = env[key]?.trim().toLowerCase();
     if (value === undefined || value === "") return fallback;
@@ -52,8 +49,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     host,
     port: integer("MCP_PORT", 8790, 1, 65535),
     bearerToken: env.MCP_AUTH_TOKEN || undefined,
-    allowedHosts: csv(env.MCP_ALLOWED_HOSTS, loopback ? ["localhost", "127.0.0.1", "[::1]"] : ["localhost", "127.0.0.1", host]),
-    allowedOrigins: csv(env.MCP_ALLOWED_ORIGINS, loopback ? ["localhost", "127.0.0.1", "[::1]"] : []),
     journalPath: resolve(projectRoot, env.WIZ_JOURNAL_PATH || ".data/writes"),
     keepWriteJournal: flag("WIZ_KEEP_WRITE_JOURNAL", false),
     timeoutMs,
