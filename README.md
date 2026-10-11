@@ -2,7 +2,8 @@
 
 为知笔记 MCP。搜索、读取、新建、修改和删除新版协同文章，传统文章只支持读取。
 
-## Docker
+## 部署
+### Docker
 
 ```sh
 docker run -d --name wiz-mcp \
@@ -14,12 +15,14 @@ docker run -d --name wiz-mcp \
   jiahuifu/modern-wiz-mcp:0.1.0
 ```
 
-## Docker Compose
+### Docker Compose
 
 ```sh
 cp .env.example .env
 docker compose up -d
 ```
+
+自托管为知时设置 `WIZ_SERVER_URL`。
 
 ## 使用
 

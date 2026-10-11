@@ -7,6 +7,7 @@ services:
       WIZ_USER_ID: ${WIZ_USER_ID}
       WIZ_PASSWORD: ${WIZ_PASSWORD}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      WIZ_SERVER_URL: ${WIZ_SERVER_URL:-}
       WIZ_KEEP_WRITE_JOURNAL: ${WIZ_KEEP_WRITE_JOURNAL:-false}
     volumes:
       - wiz-mcp-data:/app/.data
