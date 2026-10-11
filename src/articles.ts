@@ -65,9 +65,18 @@ function noteTitle(value?: string) {
 const defaultFolder = "/AI/";
 function noteFolder(value = defaultFolder) {
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > 2048 || trimmed.includes("..") || /[\u0000-\u001f\\]/.test(trimmed)) throw new WizError("INVALID_INPUT", "文件夹路径无效。");
+  if (!trimmed || trimmed.length > 2048 || trimmed.includes("..") || trimmed.includes("*") || /[\u0000-\u001f\\]/.test(trimmed)) throw new WizError("INVALID_INPUT", "文件夹路径无效。");
   const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
   return withSlash.endsWith("/") ? withSlash : `${withSlash}/`;
+}
+function folderPaths(value: unknown) {
+  const paths = new Set<string>();
+  if (typeof value !== "string") return paths;
+  for (const path of value.split("*")) {
+    const parts = path.split("/").filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) paths.add(`/${parts.slice(0, i).join("/")}/`);
+  }
+  return paths;
 }
 function noteTags(value?: string) {
   const tags = value?.trim() ?? "";
@@ -126,15 +135,10 @@ export class WizArticles {
       this.auth.request(`/ks/kv/value/${account.kbGuid}`, { query: { key: "folders" }, signal }),
       this.auth.request(`/ks/kv/value/${account.kbGuid}`, { query: { key: "folders_pos" }, signal }),
     ]);
-    const value = object(result[0]).value;
     const positions = object(result[1]).value;
     let order: Record<string, number> = {};
     try { order = typeof positions === "string" ? JSON.parse(positions) : {}; } catch { /* Optional sorting. */ }
-    const paths = new Set<string>();
-    if (typeof value === "string") for (const path of value.split("*")) {
-      const parts = path.split("/").filter(Boolean);
-      for (let i = 1; i <= parts.length; i++) paths.add(`/${parts.slice(0, i).join("/")}/`);
-    }
+    const paths = folderPaths(object(result[0]).value);
     return { folders: [...paths].map(path => {
       const parts = path.split("/").filter(Boolean);
       return { path, name: parts.at(-1)!, depth: parts.length - 1, position: Number(order?.[path]) || 1 };
@@ -317,10 +321,32 @@ export class WizArticles {
     return after;
   }
 
+  async createFolder(input: { folder?: string } = {}, signal?: AbortSignal) {
+    const folder = noteFolder(input.folder);
+    if (folder === "/") throw new WizError("INVALID_INPUT", "文件夹路径无效。");
+    const account = await this.auth.getAccount(signal);
+    const stored = object(await this.auth.request(`/ks/kv/value/${account.kbGuid}`, { query: { key: "folders" }, signal }));
+    const existing = folderPaths(stored.value);
+    const parts = folder.split("/").filter(Boolean);
+    let parent = "/";
+    let created = false;
+    for (const part of parts) {
+      const next = `${parent}${part}/`;
+      if (!existing.has(next)) {
+        await this.auth.request(`/ks/category/create/${account.kbGuid}`, { method: "POST", body: { parent, child: part }, signal });
+        existing.add(next);
+        created = true;
+      }
+      parent = next;
+    }
+    return { folder, created };
+  }
+
   async createArticle(input: CreateInput = {}, signal?: AbortSignal) {
     const title = noteTitle(input.title);
     const folder = noteFolder(input.folder);
     const tags = noteTags(input.tags);
+    await this.createFolder({ folder }, signal);
     const pending = remoteImageJobs(input.markdown === undefined ? emptyDocument() : importMarkdown(input.markdown));
     const document = pending.doc;
     const docId = randomUUID();

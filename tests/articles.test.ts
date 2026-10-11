@@ -210,6 +210,8 @@ test("create registers a collaboration note only after the editor snapshot is ac
   let closes = 0;
   const service = fixture(t, (path, options) => {
     calls.push({ path, options });
+    if (path.includes("/kv/value/")) return { value: "" };
+    if (path.includes("/category/create/")) return {};
     if (path.endsWith("/tokens")) return { editorToken: "editor-secret" };
     if (path.includes("/note/upload/")) return {};
     throw new Error(`unexpected ${path}`);
@@ -245,13 +247,43 @@ test("create registers a collaboration note only after the editor snapshot is ac
   assert.equal(body.tags, "work");
   assert.equal(body.docGuid, created.docId);
   assert.equal(closes, 1);
-  assert.deepEqual(calls.map(call => call.path), [`/ks/note/kb/${created.docId}/tokens`, upload.path]);
+  assert.deepEqual(calls.map(call => call.path), ["/ks/kv/value/kb", "/ks/category/create/kb", `/ks/note/kb/${created.docId}/tokens`, upload.path]);
+  assert.deepEqual(calls[1].options.body, { parent: "/", child: "Projects" });
+});
+
+test("creating a folder writes each missing level and leaves an existing path unchanged", async t => {
+  const calls: Array<{ path: string; options: WizRequestOptions }> = [];
+  const service = fixture(t, (path, options) => {
+    calls.push({ path, options });
+    if (path.includes("/kv/value/")) return { value: "/My Notes/*" };
+    if (path.includes("/category/create/")) return {};
+    throw new Error(`unexpected ${path}`);
+  });
+  assert.deepEqual(await service.createFolder({ folder: "/My Notes/计划/" }), { folder: "/My Notes/计划/", created: true });
+  assert.deepEqual(calls[1].options.body, { parent: "/My Notes/", child: "计划" });
+  assert.equal(calls.filter(call => call.path.includes("/category/create/")).length, 1);
+  calls.length = 0;
+  assert.deepEqual(await service.createFolder({ folder: "My Notes" }), { folder: "/My Notes/", created: false });
+  assert.equal(calls.some(call => call.path.includes("/category/create/")), false);
+  await assert.rejects(service.createFolder({ folder: "/" }), isCode("INVALID_INPUT"));
+  await assert.rejects(service.createFolder({ folder: "/A*B/" }), isCode("INVALID_INPUT"));
+  const nested: Array<{ path: string; options: WizRequestOptions }> = [];
+  const empty = fixture(t, (path, options) => {
+    nested.push({ path, options });
+    return path.includes("/kv/value/") ? { value: "" } : {};
+  });
+  assert.deepEqual(await empty.createFolder({ folder: "/AI/草稿" }), { folder: "/AI/草稿/", created: true });
+  assert.deepEqual(nested.filter(call => call.path.includes("/category/create/")).map(call => call.options.body), [
+    { parent: "/", child: "AI" },
+    { parent: "/AI/", child: "草稿" },
+  ]);
 });
 
 test("create uploads https images before the note is listed and never stores the remote address", async t => {
   const calls: string[] = [];
   const service = fixture(t, (path, options) => {
     calls.push(path);
+    if (path.includes("/kv/value/") || path.includes("/category/create/")) return { value: "/AI/*" };
     if (path.endsWith("/tokens")) return { editorToken: "editor-secret" };
     if (path.includes("/note/upload/")) return {};
     throw new Error(`unexpected ${path}`);
@@ -322,7 +354,11 @@ test("update uploads a new https image before committing the article", async t =
 
 test("a failed editor create does not register the note", async t => {
   const calls: string[] = [];
-  const service = fixture(t, path => { calls.push(path); return { editorToken: "editor-secret" }; }, {
+  const service = fixture(t, path => {
+    calls.push(path);
+    if (path.includes("/kv/value/")) return { value: "/AI/*" };
+    return { editorToken: "editor-secret" };
+  }, {
     open: async () => { throw new WizError("WRITE_UNCERTAIN", "未确认", { requestId: "00000000-0000-4000-8000-000000000001" }); },
   });
   await assert.rejects(service.createArticle({ markdown: "Hello" }), isCode("WRITE_UNCERTAIN"));
@@ -331,7 +367,11 @@ test("a failed editor create does not register the note", async t => {
 
 test("registration failure after the editor create reports the document id and closes the socket", async t => {
   let closes = 0;
-  const service = fixture(t, path => path.endsWith("/tokens") ? { editorToken: "editor-secret" } : Promise.reject(new WizError("UPSTREAM_ERROR", "登记失败")), {
+  const service = fixture(t, path => {
+    if (path.includes("/kv/value/")) return { value: "/AI/*" };
+    if (path.endsWith("/tokens")) return { editorToken: "editor-secret" };
+    return Promise.reject(new WizError("UPSTREAM_ERROR", "登记失败"));
+  }, {
     open: async () => opened(() => closes++),
   });
   const error = await service.createArticle({ markdown: "Hello" }).catch(caught => caught);

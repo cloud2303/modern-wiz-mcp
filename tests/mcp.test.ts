@@ -14,7 +14,7 @@ import type { WizArticles } from "../src/articles.js";
 import { WizError } from "../src/errors.js";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const coreTools = ["create_article", "delete_article", "get_article", "get_image_url", "get_write_status", "list_articles", "list_folders", "search_articles", "update_article", "upload_image"];
+const coreTools = ["create_article", "create_folder", "delete_article", "get_article", "get_image_url", "get_write_status", "list_articles", "list_folders", "search_articles", "update_article", "upload_image"];
 const article = { docId: "doc", title: "Test article", category: "/Notes/", version: 5, markdown: "# Context\n\nArticle content", warnings: [], uri: "wiz://articles/doc" };
 function service(overrides: Partial<Record<keyof WizArticles, unknown>> = {}) {
   return {
