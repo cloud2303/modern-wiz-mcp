@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { WizAuthManager } from "./auth.js";
 import { WizArticles } from "./articles.js";
@@ -15,7 +16,7 @@ async function main() {
     console.error("为知登录凭据已刷新并持久保存。");
     return;
   }
-  const articles = new WizArticles(auth, config);
+  const articles = new WizArticles(auth, { ...config, resourceSecret: config.bearerToken || randomBytes(32).toString("base64url") });
   auth.start();
   let close: () => Promise<void>;
   if (process.argv.includes("--stdio")) {

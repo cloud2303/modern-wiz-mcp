@@ -107,7 +107,8 @@ export async function openDocument(options: OpenDocumentOptions): Promise<Opened
   const base = new URL(options.serverUrl);
   if (!["ws:", "wss:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new WizError("INVALID_INPUT", "文档服务器地址无效。");
   base.pathname = `${base.pathname.replace(/\/+$/, "")}/editor/${encodeURIComponent(options.appId)}/${encodeURIComponent(options.docId)}`;
-  const socket = new WebSocket(base, { headers: { Origin: "https://www.wiz.cn" }, maxPayload: 32 * 1024 * 1024 });
+  const wizHost = base.hostname === "wiz.cn" || base.hostname.endsWith(".wiz.cn");
+  const socket = new WebSocket(base, { headers: { Origin: wizHost ? "https://www.wiz.cn" : base.protocol === "wss:" ? `https://${base.host}` : `http://${base.host}` }, maxPayload: 32 * 1024 * 1024 });
   const connection = new Connection(socket);
   connection._initializeHandshake = () => connection.send({ a: "hs", id: connection.id, auth: {
     appId: options.appId, docId: options.docId, token: options.token, userId: options.userId,

@@ -64,7 +64,7 @@ test("traditional html notes become markdown without opening a collaboration soc
   assert.equal(article.type, "document");
   assert.equal(article.version, 4);
   assert.match(article.markdown, /^# 旧笔记\n\n正文 \*\*重点\*\*/);
-  assert.match(article.markdown, /!\[]\(wiz:\/\/resources\/doc\/figure\.png\)$/);
+  assert.match(article.markdown, /!\[]\(https:\/\/test\.wiz\.cn\/ks\/share\/resources\/kb\/doc\/index_files\/figure\.png\)$/);
   assert.equal(article.markdown.includes("alert"), false);
   assert.equal(article.warnings[0], "这是传统 HTML 笔记，只能读取，不能修改。");
   assert.equal(article.warnings.includes("传统笔记没有协同块。"), true);
@@ -72,6 +72,31 @@ test("traditional html notes become markdown without opening a collaboration soc
   assert.deepEqual(calls.map(call => call.data), ["0", "1"]);
   await assert.rejects(service.updateArticle({ docId: "doc", expectedVersion: 4, markdown: "# 旧笔记\n\n改" }), isCode("UNSUPPORTED_NOTE"));
   assert.equal(calls.some(call => call.path.includes("/tokens")), false);
+});
+
+test("lite notes keep pre markdown and a collaboration image reference becomes a signed proxy url", async t => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const html = "<html><body><pre># 旧笔记\n\n![图](index_files/figure.png)</pre></body></html>";
+  let fetched = "";
+  const service = fixture(t, path => path.endsWith("/tokens") ? { editorToken: "editor-secret" } : { info: { type: path.includes("doc") ? "collaboration" : "document", title: "旧笔记", category: "/AI/", version: 2 }, html }, {
+    resourceSecret: "proxy-secret",
+    fetch: async (url, init) => {
+      fetched = String(url);
+      assert.equal(new Headers(init?.headers).get("x-live-editor-token"), "editor-secret");
+      return new Response(png, { status: 200 });
+    },
+  });
+  const legacy = await service.getArticle({ docId: "legacy" });
+  assert.match(legacy.markdown, /^# 旧笔记/);
+  assert.match(legacy.markdown, /https:\/\/test\.wiz\.cn\/ks\/share\/resources\/kb\/legacy\/index_files\/figure\.png/);
+  const issued = await service.imageProxyUrl({ uri: "wiz://resources/doc/figure.png", base: "http://127.0.0.1:8790" });
+  const wrapped = await service.imageProxyUrl({ uri: "![图](<wiz://resources/doc/figure.png>)", base: "http://127.0.0.1:8790" });
+  assert.equal(new URL(wrapped.url).pathname, new URL(issued.url).pathname);
+  const url = new URL(issued.url);
+  const image = await service.readProxiedImage({ docId: "doc", name: "figure.png", exp: url.searchParams.get("exp") ?? "", sig: url.searchParams.get("sig") ?? "" });
+  assert.equal(image.mime, "image/png");
+  assert.equal(fetched, "https://test.wiz.cn/editor/kb/doc/resources/figure.png");
+  await assert.rejects(service.readProxiedImage({ docId: "doc", name: "figure.png", exp: "1", sig: "nope" }), isCode("AUTH_REQUIRED"));
 });
 
 test("article reads open read-only, convert the snapshot and always close without committing", async t => {

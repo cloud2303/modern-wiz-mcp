@@ -188,6 +188,36 @@ test("restarting during a pending timer renewal cannot create duplicate timer ch
   assert.equal(calls, 2);
 });
 
+test("without a configured server, note requests follow the knowledge server returned by login", async t => {
+  const config = fixture(t, { serverUrl: undefined, kbGuid: undefined, userGuid: undefined, autoLoginParams: undefined });
+  const auth = new WizAuthManager(config, { fetch: upstream(url => {
+    if (url.pathname === "/as/user/login/token") {
+      assert.equal(url.origin, "https://as.wiz.cn");
+      return freshResponse({ kbServer: "https://next.wiz.cn" });
+    }
+    assert.equal(url.origin, "https://next.wiz.cn");
+    return Response.json({ result: "ok" });
+  }) });
+  assert.equal(await auth.request("/ks/list"), "ok");
+});
+
+test("a configured server is used for login, then note requests use the returned knowledge server", async t => {
+  const config = fixture(t, {
+    serverUrl: "http://notes.example.com:8080",
+    token: undefined, kbGuid: undefined, userGuid: undefined, autoLoginParams: undefined,
+    userId: "login-user", password: "private-password",
+  });
+  const origins: string[] = [];
+  const auth = new WizAuthManager(config, { fetch: upstream(url => {
+    origins.push(`${url.origin}${url.pathname}`);
+    if (url.pathname === "/as/user/login") return freshResponse({ kbServer: "http://kb.internal:9090" });
+    return Response.json({ result: "ok" });
+  }) });
+  assert.equal((await auth.getAccount()).kbServer, "http://kb.internal:9090");
+  assert.equal(await auth.request("/ks/list"), "ok");
+  assert.deepEqual(origins, ["http://notes.example.com:8080/as/user/login", "http://kb.internal:9090/ks/list"]);
+});
+
 test("unsafe servers and absolute interface paths never receive credentials", async t => {
   assert.throws(() => new WizAuthManager(fixture(t, { serverUrl: "https://private@attacker.example" })), isCode("INVALID_CONFIG"));
   const auth = new WizAuthManager(fixture(t), { fetch: upstream(() => assert.fail("must not send credentials")) });

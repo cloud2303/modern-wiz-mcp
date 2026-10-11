@@ -50,11 +50,12 @@ docker compose up -d
 | `update_article` | 修改正文，服务器确认后返回 `saved: true` |
 | `delete_article` | 把笔记移入回收站 |
 | `upload_image` | 在文章末尾再插入一张图片 |
+| `get_image_url` | 把协同笔记的 `wiz://resources/...` 换成临时图片地址。不要写回文章 |
 | `get_write_status` | 保存结果不确定时，按 `requestId` 查询 |
 
 也可以用资源 `wiz://articles/{docId}` 读取正文。
 
-没写 `folder` 时，列出、搜索和新建都放在 `/AI/`。搜不到只说明它不在这个文件夹。传统 HTML 笔记可以读取，不能修改。正文里的 https 图片会由服务下载并上传到为知。
+没写 `folder` 时，列出、搜索和新建都放在 `/AI/`。搜不到只说明它不在这个文件夹。传统 HTML 笔记可以读取，图片会拼成可以直接打开的地址，不能修改。协同笔记的图片仍是 `wiz://resources` 引用，用 `get_image_url` 换临时地址，不要写回正文。正文里的 https 图片会由服务下载并上传到为知。
 
 ## 许可
 

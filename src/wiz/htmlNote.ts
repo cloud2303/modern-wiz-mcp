@@ -74,13 +74,46 @@ function safeHttp(value: string) {
   } catch { return ""; }
 }
 
-function resourceTarget(src: string, resourceUrl: (name: string) => string) {
+function relativeResource(src: string) {
+  const path = decodeURIComponent(src.trim().split(/[?#]/)[0].replace(/\\/g, "/")).replace(/^\/+/, "");
+  const parts = path.split("/").filter(Boolean);
+  if (!path || parts.some(part => part === "." || part === ".." || /[\u0000-\u001f\u007f]/.test(part))) return "";
+  return parts.join("/");
+}
+
+function resourceTarget(src: string, resourceUrl: (path: string) => string) {
   const value = src.trim();
   if (!value || /[\u0000-\u001f\u007f]/.test(value) || /^javascript:/i.test(value) || /^data:/i.test(value)) return "";
   if (/^https?:\/\//i.test(value)) return value;
-  const name = decodeURIComponent(value.split(/[?#]/)[0].replace(/\\/g, "/")).split("/").filter(Boolean).at(-1) ?? "";
-  if (!name || name === "." || name === ".." || name.includes("..")) return "";
-  return resourceUrl(name);
+  const path = relativeResource(value);
+  return path ? resourceUrl(path) : "";
+}
+
+function shareUrl(base: string, path: string) {
+  return base + path.split("/").map(encodeURIComponent).join("/");
+}
+
+function rewriteMarkdownImages(markdown: string, resourceUrl: (path: string) => string) {
+  return markdown.replace(/(!\[[^\]]*\]\()([^)]+)(\))/g, (whole, open: string, target: string, close: string) => {
+    if (/^[a-z][a-z\d+.-]*:/i.test(target)) return whole;
+    const path = relativeResource(target);
+    return path ? `${open}${resourceUrl(path)}${close}` : whole;
+  });
+}
+
+/** Lite notes store Markdown inside one pre element. Other HTML is converted. Image paths become share URLs. */
+export function legacyNoteMarkdown(html: string, shareBase: string) {
+  if (html.length > 2_000_000) throw new WizError("UNSUPPORTED_NOTE", "传统笔记正文超过读取限制。");
+  const resourceUrl = (path: string) => shareUrl(shareBase, path);
+  const pre = /<pre>([\s\S]*)<\/pre>/i.exec(html);
+  if (pre) {
+    const outside = html.replace(/<pre>[\s\S]*<\/pre>/i, "").replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
+    if (!outside.replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").trim()) {
+      const markdown = rewriteMarkdownImages(decode(pre[1]), resourceUrl).trim();
+      return { markdown, warnings: markdown ? [] : ["传统笔记正文里没有可读取的文字。"] };
+    }
+  }
+  return htmlNoteToMarkdown(html, resourceUrl);
 }
 
 /** Traditional Wiz HTML becomes readable Markdown. Images stay as references. */

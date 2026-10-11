@@ -14,7 +14,7 @@ import type { WizArticles } from "../src/articles.js";
 import { WizError } from "../src/errors.js";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const coreTools = ["create_article", "delete_article", "get_article", "get_write_status", "list_articles", "list_folders", "search_articles", "update_article", "upload_image"];
+const coreTools = ["create_article", "delete_article", "get_article", "get_image_url", "get_write_status", "list_articles", "list_folders", "search_articles", "update_article", "upload_image"];
 const article = { docId: "doc", title: "Test article", category: "/Notes/", version: 5, markdown: "# Context\n\nArticle content", warnings: [], uri: "wiz://articles/doc" };
 function service(overrides: Partial<Record<keyof WizArticles, unknown>> = {}) {
   return {
@@ -164,6 +164,24 @@ test("HTTP service rejects missing or wrong Bearer tokens and accepts any Host o
   assert.equal(healthy.status, 200);
   assert.deepEqual(JSON.parse(healthy.body), { ok: true, service: "modern-wiz-mcp" });
   assert.equal(healthy.body.includes("secret"), false);
+});
+
+test("the image proxy answers without the MCP bearer token", async t => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const articles = service({ readProxiedImage: async () => ({ bytes: png, mime: "image/png" }) });
+  const http = createHttpService(articles, readConfig({
+    WIZ_TOKEN: "synthetic-token", WIZ_KB_GUID: "kb", WIZ_USER_GUID: "user", WIZ_SERVER_URL: "https://test.wiz.cn",
+    MCP_AUTH_TOKEN: "service-secret",
+  }));
+  await new Promise<void>(resolve => http.server.listen(0, "127.0.0.1", resolve));
+  const address = http.server.address();
+  assert.ok(address && typeof address !== "string");
+  t.after(() => http.close());
+  const image = await rawRequest(`http://127.0.0.1:${address.port}/resources/doc/figure.png?exp=1&sig=x`, {});
+  assert.equal(image.status, 200);
+  assert.equal(image.body, png.toString("utf8"));
+  const denied = await rawRequest(`http://127.0.0.1:${address.port}/health`, {});
+  assert.equal(denied.status, 401);
 });
 
 test("stdio entrypoint can be spawned by a real Client with a synthetic env file and clean protocol stdout", { timeout: 10_000 }, async t => {

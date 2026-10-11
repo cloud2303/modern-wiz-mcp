@@ -3,8 +3,9 @@ import type { WizAuthManager } from "./auth.js";
 import { WizError } from "./errors.js";
 import { openDocument, commitDocument } from "./wiz/socket.js";
 import { importMarkdown, planArticleUpdate } from "./wiz/markdown.js";
-import { assertRemoteImageUrl, prepareImage, uploadEditorResource, type PrepareImageInput } from "./wiz/resources.js";
-import { htmlNoteToMarkdown } from "./wiz/htmlNote.js";
+import { assertRemoteImageUrl, downloadEditorResource, prepareImage, uploadEditorResource, type PrepareImageInput } from "./wiz/resources.js";
+import { legacyNoteMarkdown } from "./wiz/htmlNote.js";
+import { signImageProxy, verifyImageProxy } from "./wiz/imageProxy.js";
 import { wizDocToMarkdownResult } from "./wiz/toMarkdown.js";
 import type { WizBlock, WizDoc } from "./wiz/types.js";
 import { inspectWriteJournal } from "./wiz/writeJournal.js";
@@ -38,11 +39,23 @@ interface Options {
   commit?: typeof commitDocument;
   fetch?: typeof fetch;
   lookup?: PrepareImageInput["lookup"];
+  resourceSecret?: string;
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export function validDocId(value: string) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new WizError("INVALID_INPUT", "文章标识无效。");
   return value;
+}
+function validResourceName(value: string) {
+  if (!value || value.length > 200 || /[\\/]/.test(value) || value.includes("..") || /[\u0000-\u001f\u007f]/.test(value)) throw new WizError("INVALID_INPUT", "图片引用无效。");
+  return value;
+}
+function parseResourceUri(value: string) {
+  const match = /wiz:\/\/resources\/([A-Za-z0-9_-]{1,128})\/([^)\s<>]+)/i.exec(value.trim());
+  if (!match) throw new WizError("INVALID_INPUT", "图片引用必须是 wiz://resources/{docId}/{文件名}。");
+  let name: string;
+  try { name = decodeURIComponent(match[2]); } catch { throw new WizError("INVALID_INPUT", "图片引用无效。"); }
+  return { docId: validDocId(match[1]), name: validResourceName(name) };
 }
 function noteTitle(value?: string) {
   const title = value?.trim() || "<无标题笔记>";
@@ -162,7 +175,7 @@ export class WizArticles {
     const tokens = object(await this.auth.request(`/ks/note/${account.kbGuid}/${docId}/tokens`, { method: "POST", signal }));
     if (typeof tokens.editorToken !== "string" || !tokens.editorToken) throw new WizError("AUTH_REQUIRED", "为知未返回文章编辑凭据。");
     account = await this.auth.getAccount(signal);
-    const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:"), appId: account.kbGuid,
+    const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:").replace(/^http:/, "ws:"), appId: account.kbGuid,
       docId, token: tokens.editorToken, userId: account.userGuid, displayName: "Wiz MCP", permission, signal, timeoutMs: this.options.timeoutMs });
     try { return await run(opened, tokens.editorToken); } finally { opened.close(); }
   }
@@ -184,7 +197,8 @@ export class WizArticles {
     const payload = object(await this.auth.request(`/ks/note/download/${account.kbGuid}/${docId}`, { query: { downloadInfo: "1", downloadData: "1" }, signal }));
     const html = typeof payload.html === "string" ? payload.html : "";
     if (!html.trim()) throw new WizError("UNSUPPORTED_NOTE", "传统笔记没有返回 HTML 正文。加密或压缩包形式的正文不能读取。");
-    const converted = htmlNoteToMarkdown(html, name => `wiz://resources/${docId}/${encodeURIComponent(name)}`);
+    const shareBase = `${new URL(account.kbServer).origin}/ks/share/resources/${account.kbGuid}/${docId}/`;
+    const converted = legacyNoteMarkdown(html, shareBase);
     const version = typeof info.version === "number" && Number.isInteger(info.version) && info.version >= 0 ? info.version : 0;
     return {
       docId,
@@ -204,7 +218,7 @@ export class WizArticles {
       resourceUrl: name => `wiz://resources/${docId}/${encodeURIComponent(name)}`,
       wikiLinkUrl: id => `wiz://articles/${encodeURIComponent(id)}`,
     });
-    if (result.markdown.includes(`wiz://resources/${docId}/`)) result.warnings.push("为知内部图片只保留引用，本服务不把文件再下载出来。在为知客户端里会显示已保存的图片。");
+    if (result.markdown.includes(`wiz://resources/${docId}/`)) result.warnings.push("协同笔记图片仍是 wiz://resources 引用。需要查看时用 get_image_url 换临时地址，不要把这个地址写回文章。");
     return {
       docId,
       title: typeof info.title === "string" ? info.title : data.meta?.title ?? "无标题",
@@ -216,6 +230,33 @@ export class WizArticles {
       type: typeof info.type === "string" ? info.type : "",
       uri: `wiz://articles/${docId}`,
     };
+  }
+
+  async imageProxyUrl(input: { uri: string; base: string }, signal?: AbortSignal) {
+    const resource = parseResourceUri(input.uri);
+    const info = await this.fetchNoteInfo(resource.docId, signal);
+    if (!info.type.toLowerCase().startsWith("collaboration")) throw new WizError("UNSUPPORTED_NOTE", "传统笔记的图片地址已经在正文里，不用换算。");
+    const secret = this.options.resourceSecret;
+    if (!secret) throw new WizError("INVALID_CONFIG", "图片代理尚未配置。");
+    try { return signImageProxy({ base: input.base, docId: resource.docId, name: resource.name, secret }); }
+    catch { throw new WizError("INVALID_INPUT", "图片代理地址无效。"); }
+  }
+
+  async readProxiedImage(input: { docId: string; name: string; exp: string; sig: string }, signal?: AbortSignal) {
+    const docId = validDocId(input.docId);
+    validResourceName(input.name);
+    const secret = this.options.resourceSecret;
+    if (!secret || !verifyImageProxy({ ...input, docId, secret })) throw new WizError("AUTH_REQUIRED", "图片地址无效或已过期。");
+    const info = await this.fetchNoteInfo(docId, signal);
+    if (!info.type.toLowerCase().startsWith("collaboration")) throw new WizError("UNSUPPORTED_NOTE", "传统笔记的图片不通过这个地址读取。");
+    let account = await this.auth.getAccount(signal);
+    const tokens = object(await this.auth.request(`/ks/note/${account.kbGuid}/${docId}/tokens`, { method: "POST", signal }));
+    if (typeof tokens.editorToken !== "string" || !tokens.editorToken) throw new WizError("AUTH_REQUIRED", "为知未返回文章编辑凭据。");
+    account = await this.auth.getAccount(signal);
+    return downloadEditorResource({
+      kbServer: account.kbServer, kbGuid: account.kbGuid, docId, name: input.name, token: tokens.editorToken,
+      fetch: this.options.fetch, signal, timeoutMs: this.options.timeoutMs,
+    });
   }
 
   async getArticle(input: { docId: string; includeBlocks?: boolean }, signal?: AbortSignal) {
@@ -292,7 +333,7 @@ export class WizArticles {
       const tokens = object(await this.auth.request(`/ks/note/${account.kbGuid}/${docId}/tokens`, { method: "POST", signal }));
       if (typeof tokens.editorToken !== "string" || !tokens.editorToken) throw new WizError("AUTH_REQUIRED", "为知未返回新建文章的编辑凭据。");
       account = await this.auth.getAccount(signal);
-      const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:"), appId: account.kbGuid, docId,
+      const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:").replace(/^http:/, "ws:"), appId: account.kbGuid, docId,
         token: tokens.editorToken, userId: account.userGuid, displayName: "Wiz MCP", permission: "w", createData: document,
         journalPath: this.options.journalPath, keepJournal: this.options.keepWriteJournal, signal, timeoutMs: this.options.timeoutMs });
       try {

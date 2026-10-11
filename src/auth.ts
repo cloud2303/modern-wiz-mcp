@@ -39,7 +39,7 @@ const asOrigin = "https://as.wiz.cn";
 const authError = () => new WizError("AUTH_REQUIRED", "为知账号授权已失效，请更新服务端登录配置。");
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
 
-function safeOrigin(value: string): string {
+function officialOrigin(value: string): string {
   try {
     const url = new URL(value);
     if (url.protocol === "https:" && (url.hostname === "wiz.cn" || url.hostname.endsWith(".wiz.cn")) && !url.username && !url.password && !url.port) return url.origin;
@@ -47,7 +47,15 @@ function safeOrigin(value: string): string {
   throw new WizError("INVALID_CONFIG", "为知知识库服务器必须是无凭证的 HTTPS wiz.cn 地址。");
 }
 
-function accountFrom(value: unknown, previousParams?: string): Account {
+function configuredOrigin(value: string): string {
+  try {
+    const url = new URL(value);
+    if ((url.protocol === "https:" || url.protocol === "http:") && url.hostname && !url.username && !url.password) return url.origin;
+  } catch { /* Never expose the rejected URL, which may contain credentials. */ }
+  throw new WizError("INVALID_CONFIG", "自托管知识库地址必须是无账号的 HTTP 或 HTTPS 地址。");
+}
+
+function accountFrom(value: unknown, previousParams?: string, acceptConfiguredServer = false): Account {
   const envelope = record(value);
   const result = record(envelope.result ?? value);
   if (![result.kbGuid, result.userGuid].every(id => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id)) || typeof result.token !== "string" || !result.token || typeof result.kbServer !== "string") {
@@ -59,7 +67,7 @@ function accountFrom(value: unknown, previousParams?: string): Account {
     kbGuid: result.kbGuid as string,
     userGuid: result.userGuid as string,
     token: result.token,
-    kbServer: safeOrigin(result.kbServer),
+    kbServer: acceptConfiguredServer ? configuredOrigin(result.kbServer) : officialOrigin(result.kbServer),
     ...(userId ? { userId } : {}),
     ...(typeof params === "string" && params ? { autoLoginParams: params } : {}),
     ...(typeof result.displayName === "string" ? { displayName: result.displayName } : {}),
@@ -88,7 +96,7 @@ export class WizAuthManager {
     if (!config.token && !config.autoLoginParams && !(config.userId && config.password)) throw new WizError("INVALID_CONFIG", "请配置为知 token、自动登录凭证或账号密码。");
     if (!config.sessionPath || !Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1 || !Number.isSafeInteger(config.refreshIntervalMs) || config.refreshIntervalMs < 1) throw new WizError("INVALID_CONFIG", "登录缓存路径或刷新时间配置无效。");
     for (const id of [config.kbGuid, config.userGuid]) if (id !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new WizError("INVALID_CONFIG", "知识库或用户标识无效。");
-    this.config = { ...config, ...(config.serverUrl ? { serverUrl: safeOrigin(config.serverUrl) } : {}) };
+    this.config = { ...config, ...(config.serverUrl ? { serverUrl: configuredOrigin(config.serverUrl) } : {}) };
     this.fetcher = options.fetch ?? globalThis.fetch;
     // A credential/configuration change intentionally invalidates the old cache.
     // Only this digest is written; the password itself is never cached.
@@ -134,7 +142,7 @@ export class WizAuthManager {
   }
 
   private async send(origin: string, path: string, options: WizRequestOptions & { headers?: Record<string, string> } = {}): Promise<unknown> {
-    const url = new URL(path, safeOrigin(origin));
+    const url = new URL(path, this.config.serverUrl ? configuredOrigin(origin) : officialOrigin(origin));
     for (const [name, value] of Object.entries({ ...clientParams, ...options.query })) url.searchParams.set(name, value);
     let response: Response;
     let envelope: unknown;
@@ -172,10 +180,11 @@ export class WizAuthManager {
     const previous = this.account;
     const params = previous?.autoLoginParams ?? this.config.autoLoginParams;
     const token = previous?.token ?? this.config.token;
+    const loginOrigin = this.config.serverUrl ?? asOrigin;
     const candidates: Array<() => Promise<unknown>> = [];
-    if (params) candidates.push(() => this.send(asOrigin, "/as/user/login/auto", { headers: { "wiz-auto-login-param": params } }));
-    if (token) candidates.push(() => this.send(asOrigin, "/as/user/login/token", { method: "POST", query: { token } }));
-    if (this.config.userId && this.config.password) candidates.push(() => this.send(asOrigin, "/as/user/login", {
+    if (params) candidates.push(() => this.send(loginOrigin, "/as/user/login/auto", { headers: { "wiz-auto-login-param": params } }));
+    if (token) candidates.push(() => this.send(loginOrigin, "/as/user/login/token", { method: "POST", query: { token } }));
+    if (this.config.userId && this.config.password) candidates.push(() => this.send(loginOrigin, "/as/user/login", {
       method: "POST", body: { userId: this.config.userId, password: this.config.password, autoLogin: true, deviceId: null, frontLang: "zh-CN" },
     }));
     for (const candidate of candidates) {
@@ -187,7 +196,7 @@ export class WizAuthManager {
         if (error instanceof WizError && error.code === "AUTH_REQUIRED") continue;
         throw error;
       }
-      const next = accountFrom(envelope, params);
+      const next = accountFrom(envelope, params, Boolean(this.config.serverUrl));
       this.checkIdentity(next);
       this.persist(next);
       return { ...next };

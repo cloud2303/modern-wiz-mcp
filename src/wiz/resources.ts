@@ -162,7 +162,31 @@ export function editorResourceBase(kbServer: string, kbGuid: string, docId: stri
   return `${new URL(kbServer).origin}/editor/${kbGuid}/${docId}`;
 }
 
-/** Upload bytes to the note's editor resource store. An existing hash is reused and not sent again. */
+/** Read one collaboration image. The editor token stays on this request and is not returned. */
+export async function downloadEditorResource(input: {
+  kbServer: string; kbGuid: string; docId: string; name: string; token: string;
+  fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number;
+}): Promise<{ bytes: Buffer; mime: string }> {
+  const fetcher = input.fetch ?? globalThis.fetch;
+  const base = editorResourceBase(input.kbServer, input.kbGuid, input.docId);
+  const timeout = AbortSignal.timeout(input.timeoutMs ?? 30_000);
+  const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+  let response: Response;
+  try {
+    response = await fetcher(`${base}/resources/${encodeURIComponent(input.name)}`, {
+      headers: { "x-live-editor-token": input.token, "x-live-editor-base-url": Buffer.from(base, "utf8").toString("base64url"), Accept: "image/*" },
+      redirect: "error", signal,
+    });
+  } catch (error) {
+    input.signal?.throwIfAborted();
+    throw new WizError("UPSTREAM_ERROR", "暂时无法读取图片，请稍后重试。");
+  }
+  if (response.status === 404) throw new WizError("NOT_FOUND", "这篇协同笔记里没有这张图片。");
+  if (!response.ok) throw new WizError("UPSTREAM_ERROR", "为知拒绝了这张图片。");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > remoteLimit) throw new WizError("UPSTREAM_ERROR", "图片超过读取限制。");
+  return { bytes, mime: imageTypes[imageKind(bytes)].mime };
+}
 export async function uploadEditorResource(input: {
   kbServer: string; kbGuid: string; docId: string; token: string; file: ImageFile;
   fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number;
