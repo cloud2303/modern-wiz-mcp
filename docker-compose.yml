@@ -1,0 +1,14 @@
+services:
+  wiz-mcp:
+    image: jiahuifu/modern-wiz-mcp:0.1.0
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      WIZ_USER_ID: ${WIZ_USER_ID}
+      WIZ_PASSWORD: ${WIZ_PASSWORD}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      WIZ_KEEP_WRITE_JOURNAL: ${WIZ_KEEP_WRITE_JOURNAL:-false}
+    volumes:
+      - wiz-mcp-data:/app/.data
+volumes:
+  wiz-mcp-data:
