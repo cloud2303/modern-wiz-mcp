@@ -52,13 +52,26 @@ test("article list sends category pagination and normalizes search results from 
   assert.equal(defaults[1].articles.length, 0);
 });
 
-test("traditional notes are rejected before token exchange or opening a socket", async t => {
-  const calls: string[] = [];
-  const service = fixture(t, path => { calls.push(path); return { info: { type: "html" } }; }, {
-    open: async () => assert.fail("traditional note must not open a socket"),
-  });
-  await assert.rejects(service.getArticle({ docId: "doc" }), isCode("UNSUPPORTED_NOTE"));
-  assert.deepEqual(calls, ["/ks/note/download/kb/doc"]);
+test("traditional html notes become markdown without opening a collaboration socket", async t => {
+  const calls: Array<{ path: string; data: string | undefined }> = [];
+  const html = "<html><head><title>忽略</title></head><body><h1>旧笔记</h1><div>正文 <b>重点</b></div><img src=\"index_files/figure.png\"><script>alert(1)</script></body></html>";
+  const service = fixture(t, (path, options) => {
+    calls.push({ path, data: options.query?.downloadData });
+    if (options.query?.downloadData === "1") return { info: { type: "document", title: "旧笔记", category: "/AI/", version: 4 }, html };
+    return { info: { type: "document", title: "旧笔记", category: "/AI/", version: 4 } };
+  }, { open: async () => assert.fail("traditional note must not open a socket") });
+  const article = await service.getArticle({ docId: "doc", includeBlocks: true });
+  assert.equal(article.type, "document");
+  assert.equal(article.version, 4);
+  assert.match(article.markdown, /^# 旧笔记\n\n正文 \*\*重点\*\*/);
+  assert.match(article.markdown, /!\[]\(wiz:\/\/resources\/doc\/figure\.png\)$/);
+  assert.equal(article.markdown.includes("alert"), false);
+  assert.equal(article.warnings[0], "这是传统 HTML 笔记，只能读取，不能修改。");
+  assert.equal(article.warnings.includes("传统笔记没有协同块。"), true);
+  assert.equal(article.document, undefined);
+  assert.deepEqual(calls.map(call => call.data), ["0", "1"]);
+  await assert.rejects(service.updateArticle({ docId: "doc", expectedVersion: 4, markdown: "# 旧笔记\n\n改" }), isCode("UNSUPPORTED_NOTE"));
+  assert.equal(calls.some(call => call.path.includes("/tokens")), false);
 });
 
 test("article reads open read-only, convert the snapshot and always close without committing", async t => {

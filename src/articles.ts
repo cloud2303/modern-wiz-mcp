@@ -4,6 +4,7 @@ import { WizError } from "./errors.js";
 import { openDocument, commitDocument } from "./wiz/socket.js";
 import { importMarkdown, planArticleUpdate } from "./wiz/markdown.js";
 import { assertRemoteImageUrl, prepareImage, uploadEditorResource, type PrepareImageInput } from "./wiz/resources.js";
+import { htmlNoteToMarkdown } from "./wiz/htmlNote.js";
 import { wizDocToMarkdownResult } from "./wiz/toMarkdown.js";
 import type { WizBlock, WizDoc } from "./wiz/types.js";
 import { inspectWriteJournal } from "./wiz/writeJournal.js";
@@ -147,25 +148,55 @@ export class WizArticles {
     return { folder, articles: matched.slice(0, limit), returnedByUpstream: result.length, truncated: matched.length > limit };
   }
 
+  private async fetchNoteInfo(docId: string, signal?: AbortSignal) {
+    const account = await this.auth.getAccount(signal);
+    const metadata = object(await this.auth.request(`/ks/note/download/${account.kbGuid}/${docId}`, { query: { downloadInfo: "1", downloadData: "0" }, signal }));
+    const info = object(metadata.info);
+    if (typeof info.type !== "string") throw new WizError("UPSTREAM_ERROR", "为知未返回文章类型。");
+    return { ...info, type: info.type };
+  }
+
+  private async openCollaboration<T>(docId: string, permission: "r" | "w", signal: AbortSignal | undefined,
+    run: (opened: Awaited<ReturnType<typeof openDocument>>, editorToken: string) => Promise<T>) {
+    let account = await this.auth.getAccount(signal);
+    const tokens = object(await this.auth.request(`/ks/note/${account.kbGuid}/${docId}/tokens`, { method: "POST", signal }));
+    if (typeof tokens.editorToken !== "string" || !tokens.editorToken) throw new WizError("AUTH_REQUIRED", "为知未返回文章编辑凭据。");
+    account = await this.auth.getAccount(signal);
+    const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:"), appId: account.kbGuid,
+      docId, token: tokens.editorToken, userId: account.userGuid, displayName: "Wiz MCP", permission, signal, timeoutMs: this.options.timeoutMs });
+    try { return await run(opened, tokens.editorToken); } finally { opened.close(); }
+  }
+
   private async useDocument<T>(docId: string, permission: "r" | "w", signal: AbortSignal | undefined,
     run: (opened: Awaited<ReturnType<typeof openDocument>>, metadata: Record<string, unknown>, editorToken: string) => Promise<T>) {
     validDocId(docId);
     if (this.active >= (this.options.maxConcurrent ?? 8)) throw new WizError("BUSY", "服务正在处理其他文章，请稍后重试。");
     this.active++;
     try {
-      let account = await this.auth.getAccount(signal);
-      const metadata = object(await this.auth.request(`/ks/note/download/${account.kbGuid}/${docId}`, { query: { downloadInfo: "1", downloadData: "0" }, signal }));
-      const info = object(metadata.info);
-      if (typeof info.type !== "string") throw new WizError("UPSTREAM_ERROR", "为知未返回文章类型。");
-      if (!info.type.toLowerCase().startsWith("collaboration")) throw new WizError("UNSUPPORTED_NOTE", "当前仅支持协同笔记，传统 HTML/ZIW 笔记暂不支持。");
-      const tokens = object(await this.auth.request(`/ks/note/${account.kbGuid}/${docId}/tokens`, { method: "POST", signal }));
-      if (typeof tokens.editorToken !== "string" || !tokens.editorToken) throw new WizError("AUTH_REQUIRED", "为知未返回文章编辑凭据。");
-      // Account renewal may have moved the knowledge server during either HTTP call.
-      account = await this.auth.getAccount(signal);
-      const opened = await this.open({ serverUrl: account.kbServer.replace(/^https:/, "wss:"), appId: account.kbGuid,
-        docId, token: tokens.editorToken, userId: account.userGuid, displayName: "Wiz MCP", permission, signal, timeoutMs: this.options.timeoutMs });
-      try { return await run(opened, info, tokens.editorToken); } finally { opened.close(); }
+      const info = await this.fetchNoteInfo(docId, signal);
+      if (!info.type.toLowerCase().startsWith("collaboration")) throw new WizError("UNSUPPORTED_NOTE", "传统 HTML 笔记只能读取，不能修改。");
+      return await this.openCollaboration(docId, permission, signal, (opened, editorToken) => run(opened, info, editorToken));
     } finally { this.active--; }
+  }
+
+  private async readLegacyArticle(docId: string, info: Record<string, unknown>, includeBlocks: boolean, signal?: AbortSignal) {
+    const account = await this.auth.getAccount(signal);
+    const payload = object(await this.auth.request(`/ks/note/download/${account.kbGuid}/${docId}`, { query: { downloadInfo: "1", downloadData: "1" }, signal }));
+    const html = typeof payload.html === "string" ? payload.html : "";
+    if (!html.trim()) throw new WizError("UNSUPPORTED_NOTE", "传统笔记没有返回 HTML 正文。加密或压缩包形式的正文不能读取。");
+    const converted = htmlNoteToMarkdown(html, name => `wiz://resources/${docId}/${encodeURIComponent(name)}`);
+    const version = typeof info.version === "number" && Number.isInteger(info.version) && info.version >= 0 ? info.version : 0;
+    return {
+      docId,
+      title: typeof info.title === "string" ? info.title : "无标题",
+      category: typeof info.category === "string" ? info.category : "",
+      type: info.type,
+      version,
+      markdown: converted.markdown,
+      warnings: ["这是传统 HTML 笔记，只能读取，不能修改。", ...converted.warnings, ...(includeBlocks ? ["传统笔记没有协同块。"] : [])],
+      document: undefined,
+      uri: `wiz://articles/${docId}`,
+    };
   }
 
   private describe(docId: string, data: WizDoc, version: number, info: Record<string, unknown>, includeBlocks = false) {
@@ -182,12 +213,20 @@ export class WizArticles {
       markdown: result.markdown,
       warnings: result.warnings,
       ...(includeBlocks ? { document: data } : {}),
+      type: typeof info.type === "string" ? info.type : "",
       uri: `wiz://articles/${docId}`,
     };
   }
 
   async getArticle(input: { docId: string; includeBlocks?: boolean }, signal?: AbortSignal) {
-    return this.useDocument(input.docId, "r", signal, async (opened, info) => this.describe(input.docId, opened.data, opened.version, info, input.includeBlocks));
+    const docId = validDocId(input.docId);
+    if (this.active >= (this.options.maxConcurrent ?? 8)) throw new WizError("BUSY", "服务正在处理其他文章，请稍后重试。");
+    this.active++;
+    try {
+      const info = await this.fetchNoteInfo(docId, signal);
+      if (!info.type.toLowerCase().startsWith("collaboration")) return await this.readLegacyArticle(docId, info, input.includeBlocks === true, signal);
+      return await this.openCollaboration(docId, "r", signal, async opened => this.describe(docId, opened.data, opened.version, info, input.includeBlocks));
+    } finally { this.active--; }
   }
 
   async updateArticle(input: UpdateInput, signal?: AbortSignal) {
